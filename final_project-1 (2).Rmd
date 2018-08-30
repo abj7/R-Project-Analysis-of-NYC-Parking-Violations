@@ -1,0 +1,373 @@
+---
+title: "Stat 410 R for Data Science Final Project: An Analysis of NYC Parking Violations"
+author: "Alan Ji and Paul Gao"
+date: "April 5, 2018"
+geometry: margin=1in
+output:
+  pdf_document: 
+    latex_engine: xelatex
+fontsize: 10pt
+---
+```{r,echo = FALSE}
+suppressMessages(library(plyr))
+suppressMessages(library(dplyr))
+suppressMessages(library(tidyr))
+suppressMessages(library(ggplot2))
+suppressWarnings(suppressMessages(library(rgdal)))
+suppressWarnings(suppressMessages(library(data.table)))
+suppressWarnings(suppressMessages(library(cowplot)))
+suppressWarnings(suppressMessages(library(plotrix)))
+suppressWarnings(suppressMessages(library(RSQLite)))
+suppressWarnings(suppressMessages(library(stringr)))
+suppressWarnings(suppressMessages(library(grid)))
+suppressWarnings(suppressMessages(library(gridBase)))
+suppressWarnings(suppressMessages(library(circlize)))
+```
+
+```{r,echo = FALSE}
+invisible(memory.limit(560000))
+suppressWarnings(suppressMessages(invisible(parking <- fread("./parking.csv", showProgress = FALSE))))
+data <- parking
+suppressWarnings(suppressMessages(invisible(violations <- fread("./violations.txt", sep = ",", sep2 = "\n", showProgress = FALSE))))
+suppressWarnings(suppressMessages(invisible(census <- fread("./household.csv", showProgress = FALSE))))
+suppressWarnings(suppressMessages(invisible(vio <- fread("./violation.csv", showProgress = FALSE))))
+dcon <- dbConnect(SQLite(), dbname = "./STAT405_605.sqlite")
+dbWriteTable(conn = dcon, name = "park", parking, append = TRUE, row.names = FALSE)
+dbWriteTable(conn = dcon, name = "violations", violations, append = TRUE, row.names = FALSE)
+dbWriteTable(conn = dcon, name = "household", census, append = TRUE, row.names = FALSE)
+dbWriteTable(conn = dcon, name = "viol", vio, append = TRUE, row.names = FALSE)
+```
+##Introduction
+The data that our group wanted to explore was Parking Violations Issued in NYC for the 2017 fiscal year. We found this dataset interesting not only because we had many different ideas for analyzing this topic, but also because we wished to connect some of this data to practical and real world generalizations/events. One example would be analyzing which violation codes are most often broken and how this trend could serve as an example to prevent future violations. We also chose NYC over Houston because the city is more urban and parking is more of a hassle.
+
+We found this dataset in NYC's OpenData website, which offered a variety of datasets regarding some of NYC's logistics. There are `r nrow(parking)` rows and `r ncol(parking)` columns. Each row is an observation of a parking violation, which provides column data such as plate id, the violation code that is broken, issue data, street and precinct, as well as descriptive data such as violation description. 
+
+##Influence of Time
+One of the main questions we wished to observe was how time plays a part in the frequencies of these violations. To answer this question, we created two different plots of the calender months and the hours of the day that these violations have been issued.
+
+When considering the hours of the day that these violations are being performed, we hypothesized that the amount of parking tickets issued for any particular day would be the most before noon and during the afternoon. This is because people are usually the busiest then, both in giving the tickets and violating the laws. Below, we created a bar plot of this relationship between the hour of the day and the proportion of parking tickets being issued.
+
+Later, we added levels of the law section that is being violated. Here, 1111 corresponds to the violations of traffic-control indications, 1180 corresponds to speeding, and 408 corresponds to stopping, standing, or parking on sidewalks.
+
+```{r, messages = FALSE, echo = FALSE}
+invisible(Sys.setlocale("LC_TIME", "English")) 
+res <- dbSendQuery(conn = dcon, "SELECT `Violation Time`,`Law Section` FROM park WHERE `Law Section` IN (408, 1111, 1180)")
+x <- dbFetch(res, -1)
+dbClearResult(res)
+x <- data.frame("Violation Time" = unlist(x$`Violation Time`), "Law Section" = unlist(x$`Law Section`))
+time <- as.POSIXlt(paste0(x$Violation.Time, "M"), format = "%I%M%p")
+hours <- time$hour
+hours <- data.frame(replace(hours, is.na(hours), 0))
+colnames(hours) <- c("hour")
+d <- cbind(hours, x)
+g <- ggplot(d)+
+  aes(x= hour, y = ..count../sum(..count..), group=Law.Section, fill=factor(Law.Section))+
+  geom_bar()+
+  labs(title = "Proportion of Parking Ticket Issued by Hour of the Day", x = "Hour", y = "Proportion of Parking Tickets")+
+  theme(plot.title = element_text(size = 15, face = "bold", hjust = 0.5))+
+  theme(axis.title = element_text(size = 12, face = "bold"))+
+  theme_gray(base_size = 14) + 
+  scale_fill_manual(values = c("red","magenta","purple")) + 
+  scale_fill_discrete(name = "Law Section")
+suppressWarnings(print(g))
+```
+From this plot, we can see that most violations being issued are during daylight. After plotting this, we've realized that the hour depends on two factors: the time of the one performing the violation, and the time of the one giving the ticket. Therefore, we would expect law enforcement to only be available during work hours, and the people who perform these parking violations scrape by at night due to the low proportions during nighttime hours. Our hypothesis was somewhat supported, as during the daylight times, the hours before noon actually had a higher proportion of tickets issued compared to the hours after noon.
+
+Furthermore, one of the reasons why parking tickets may be more frequent during the morning hours is because of parking issues and limited parking spaces for workers in the city. In the morning, if the city workers arrive too late, there will be difficulty finding parking spaces, resulting in an increase in parking tickets distributed a few hours later as law enforcement comes by.
+
+From the law section distribution, the vast majority of the parking tickets violates law section 408, of inappropriate stopping/standing/parking. Since this dataset primarily deals with parking violations, this makes sense. Law sections 1111 and 1180 are not as often. 1111 violations can be seen evenly throughout the day, while 1180 is concentrated around the 10th hour. This may be due to those who are late for work and succumb to speeding.
+
+Another question that should be raised in relationship to time is when violations are most likely to occur throughout the year. We hypothesized that they would occur mostly during the summer, from vacations and other increased leisure activities. We plotted this relationship below, using different colors to represent the season.
+
+```{r,echo = FALSE}
+#Months
+res <- dbSendQuery(dcon, "SELECT `Issue Date` FROM park")
+x <- dbFetch(res, -1)
+dbClearResult(res)
+x <- data.frame(lVal = unlist(x))
+date <- as.POSIXlt(x$lVal, format = "%m/%d")
+months <- as.data.frame(month(date))
+gg <- suppressWarnings(ggplot(data = months)+
+  aes(x=months, y = ..count../sum(..count..), fill = "red")+
+  geom_bar(fill = c("#72a8ff", "#72a8ff", "#3ec419","#3ec419", "#3ec419", "#ff7171","#ff7171", "#ff7171", "#ff922d","#ff922d", "#ff922d", "#72a8ff"))+
+  labs(title = "Proportions of Parking Tickets Issued by Month", x = "Month", y = "Proportion of Parking Tickets")+
+  scale_x_continuous(breaks = round(seq(1, 12, by = 1),1))+
+  theme(plot.title = element_text(size = 15, face = "bold", hjust = 0.5))+
+  theme(axis.title = element_text(size = 12, face = "bold"))+
+  theme_gray(base_size = 14))
+suppressWarnings(print(gg))
+```
+
+From the seasonal analysis, we see that summer, especially June, had the most parking tickets issued, which only partly supports our hypothesis. On the other hand, there appears to be a huge dip from June to July also in the summer. We can accredit this dip to perhaps summer vacation, when active law enforcement officers are at a minimal. Furthermore, the parking tickets issued during the winter are the lowest, looking at the overall proportions during those three months.
+
+#Influence of Vehicles
+The second question we raised was how the vehicle types, including brand and body type, are related to the frequencies of these parking tickets.
+
+First, we wanted to explore the vehicle body type distribution to generalize about how the frequencies of parking tickets issued affect different types of people. For example, if more sedans were ticketed (which we initially hypothesized), then more regular people would be ticketed. However, if there is a significant amount of taxis being ticked, for example, then that would raise an interesting point about how taxiing in NYC is regulated poorly. 
+
+Then, we wanted to explore the vehicle make/brand in order to generalize about how income affects parking tickets. If more BMW's were ticketed than other brands, that would mean wealtheir New Yorkers would be more reckless in their driving habits than others. However, there is also the popularities of the brands that play a huge part in this generalization. 
+
+We have the two into a single plot below.
+
+```{r,echo = FALSE}
+res <- dbSendQuery(dcon, "SELECT `Vehicle Body Type`, count(*) FROM park GROUP BY `Vehicle Body Type` ORDER BY count(*) DESC LIMIT 10")
+bodytype <- dbFetch(res, -1)
+dbClearResult(res)
+names(bodytype)[names(bodytype) == 'count(*)'] <- 'Count'
+k <- ggplot(data = bodytype, aes(x = reorder(`Vehicle Body Type`,-Count), y = Count))+
+  geom_bar(stat = "identity", fill = "purple")+
+  labs(title = "10 Most Ticketed Vehicle Body Type", x = "Car Type", y = "Count")+
+  theme_gray(base_size = 14)+
+  theme(axis.text.x = element_text(angle =60, hjust = 1))+
+  theme(plot.title = element_text(size = 15, face = "bold", hjust = 0.5))+
+  theme(axis.title = element_text(size = 12, face = "bold"))
+
+res <- dbSendQuery(dcon, "SELECT `Vehicle Make`, count(*) FROM park GROUP BY `Vehicle Make` ORDER BY count(*) DESC LIMIT 10")
+bodytype <- dbFetch(res, -1)
+dbClearResult(res)
+names(bodytype)[names(bodytype) == 'count(*)'] <- 'Count'
+l <- ggplot(data = bodytype, aes(x = reorder(`Vehicle Make`,-Count), y = Count))+
+  geom_bar(stat = "identity", fill = "gold")+
+  labs(title = "10 Most Ticketed Vehicle Make", x = "Car Make/Brand", y = "Count")+
+  theme_gray(base_size = 14)+
+  theme(axis.text.x = element_text(angle =60, hjust = 1))+
+  theme(plot.title = element_text(size = 15, face = "bold", hjust = 0.5))+
+  theme(axis.title = element_text(size = 12, face = "bold"))
+
+vp1 <- viewport(x = 0, y = 0.5, width = 1, height = 0.5,
+               just = c("left", "bottom"))
+vp2 <- viewport(x = 0, y = 0, width = 1, height = 0.5,
+               just = c("left", "bottom"))
+grid.newpage()
+print(k, vp = vp1)
+print(l, vp = vp2)
+
+```
+
+Based on the first bar plot, there seems to be more suburban cars, both SUV and 4-door, than other vehicle body types. Therefore, the commonplace population in NYC is ticketed more often. One particular column, DELV (delivery car), raises an interesting question. Among the other vehicle body types, DELV is fourth in frequency. This means that a lot of the delivery cars in NYC are ticketed quite often. This might be usual because of NYC's crowded, urban landscape, but it is also unusual because one wouldn't expect delivery car drivers to be unknowledgeable about NYC's parking laws.
+
+From the second bar plot, Ford, Toyota, Honda, and other middle-class cars are the most tickted, while BMW and other more expensive cars are less ticketed. However, since the popularity and the proportion of New Yorkers having these types of luxury cars are much lower, our generalization that upper class New Yorkers may or may not commit more violations is invalid to some extent.
+
+Below, we have also provided a 3D pie chart of the top 6 most ticketed vehicle body types in relation to the other types, as a way to compare the vast proportion of the SUBN and 4DSD cars with the others.
+
+```{r,echo = FALSE}
+res <- dbSendQuery(dcon, "SELECT `Vehicle Body Type`, count(*) FROM park GROUP BY `Vehicle Body Type` ORDER BY count(*) DESC")
+bodytype <- dbFetch(res, -1)
+dbClearResult(res)
+bodytype2 <- bodytype
+bodytype2[7,1] <- "OTHER"
+suppressWarnings(bodytype2[7,2] <- sum(bodytype$"count(*)"[7:dim(bodytype)]))
+suppressWarnings(bodytype2 <- bodytype2[-(8:dim(bodytype2)),])
+
+slices <- bodytype2$"count(*)" 
+lbls <- bodytype2$`Vehicle Body Type`
+
+pie3D(slices,labels=lbls,explode=0.2, theta = pi/3, main='Parking Ticket Issued by Vehicle Body Type', radius = 1.4, labelcex = 1.1)
+ 
+```
+
+#The Deliverer vs the Ticketer
+
+Among these findings, the delivery car being common car type that is ticketed is very intriguing. When, where, and how did these delivery cars end up becoming ticketed so often? We crossed our main dataset with the violation descriptions dataset and discovered these results (limited to 20 rows):
+```{r, echo = FALSE}
+res <- dbSendQuery(conn = dcon, "
+SELECT a.`Vehicle Body Type`, a.`Violation County`, a.`Violation Time`, b.V2
+FROM park AS a
+INNER JOIN violations AS b
+ON a.`Violation Code` = b.V1
+WHERE a.`Vehicle Body Type` = 'DELV'
+GROUP BY `Violation Time`
+LIMIT 20
+")
+
+x <- dbFetch(res, -1)
+colnames(x) <- c("Vehicle Body Type", "Violation County", "Violation Time", "Violation Description")
+x
+dbClearResult(res)
+```
+
+It turns out that most violations are in NY, or New York County, which is Manhattan. The violation times are all mostly around noon, and the violations vary. This raises an interesting question about Manhattan being such a commonly ticketed area, that we will try to find an answer to next.
+
+## The Manhattan Hypothesis
+
+Manhattan is the busiest district of NYC, and it is notorious for its traffic problems. There are many reports about the difficulties of parking in Manhattan, such as limited parking spaces and ridiculous parking prices. To test if such difficulties lead to more parking tickets being issued at Manhattan, we conducted a hypothesis test to explore this problem. Since we are interested in a likelihood problem, we imported an auxiliary dataset of the number of households in each of the 5 districts in New York to calculate parking tickets issued per household. 
+The null hypothesis is: the monthly average parking tickets issued per household is the same in Manhattan as in the whole city. The alternative hypothesis is: the monthly average parking tickets issued per household is more in Manhattan than in the whole city. If the test rejects our null hypothesis, we can conclude that it is more likely to get a parking ticket in Manhattan.
+
+```{r, echo = FALSE}
+res <- dbSendQuery(conn = dcon, "SELECT * FROM household")
+p <- dbFetch(res, -1)
+dbClearResult(res)
+household.county <- rowSums(p[,c(3:9)])
+date1 <- as.POSIXlt(data$`Issue Date`, format = "%m/%d/20%y")
+total.household <- sum(household.county)
+month.year <- subset(as.data.frame(table(data$`Violation County`,paste(month(date1), year(date1),sep = "/"))))
+man.parking.raw <- subset(month.year, Var1 == "MN" | Var1 == "NY")
+man.parking <- subset(aggregate(man.parking.raw$Freq, by=list(Category=man.parking.raw$Var2), FUN=sum),x>100000)
+all.parking <- subset(aggregate(month.year$Freq, by=list(Category=month.year$Var2), FUN=sum),x>500000)
+mu0 <- mean(all.parking$x/total.household)
+sample.mean <- mean(man.parking$x/household.county[3])
+signif.level <- 0.05
+stdev <- sd(all.parking$x/total.household)
+n <- 12
+z <- (sample.mean - mu0) / (stdev / sqrt(n))
+pval <- pnorm(z, lower.tail=FALSE)
+critical <- qnorm((1-signif.level))
+```
+
+```{r, echo = FALSE}
+
+par(mar=c(2,2,1,2)) 
+x <- seq(-12,12, length = 100000)
+y <- dnorm(x)
+plot(x,y,type = "n",lwd = 2, ylab = "Density", main = "")
+abline(h=0.0)
+polygon(c(critical, seq(critical, 5, 0.01), 5),c(0, dnorm(seq(critical, 5, 0.01)), 0), col="red", density = 10, lwd = 2, angle = -45)
+#polygon(c(sample.mean, seq(sample.mean, 0.45, 0.01), 0.45),c(0, dnorm(seq(sample.mean, 0.45, 0.01), mean = mu0, sd = stdev), 0), col="orange", density = 10, lwd = 2)
+segments(x0=z,y0=0,x1=z,y1=0.1,col = "orange", lwd = 5)
+abline(v=0)
+lines(x,y,type = "l",lwd = 2)
+legend("topleft", legend=c(paste0("z-score = ", z), 
+                           paste0("p-value = ", pval, 6)))
+
+```
+Based on the hypothesis test, with a confidence level of 95%, we rejected the null hypothesis. The p-value is very small, indicating a very strong evidence against the null hypothesis. Therefore, we can conclude that it is far more likely to get a parking ticket in Manhattan. Such result indicates that people living in Manhattan might want to avoid driving their own car and choose other transportation methods, such as metro, buses or Uber.
+
+#Tickets Issued by Precinct
+New York City is divided into 77 police precincts. We are interested to find out how the number of parking tickets issued varies by different precincts. For this problem, we visualize the data on the New York City police precinct map by using a color scale from relatively fewer tickets issued (yellow) to relatively more tickets issued (red). We hope to find a general pattern of the number of the tickets issued, as well as find the most ticketed precinct of the city. For this, we utilized again another auxiliary dataset of police precinct data to perform this experiment.
+
+```{r, results = 'hide', echo = FALSE, message = FALSE}
+data.pre <- subset(data, `Violation Precinct` != 0)
+data.pre <- as.data.frame(table(data.pre$`Violation Precinct`))
+most.tickted <- which(data.pre[,2] == max(data.pre[,2]))
+suppressWarnings(suppressMessages(invisible(nyc <- readOGR(dsn = ".", layer = "police"))))
+nyc@data$id <- rownames(nyc@data)
+suppressWarnings(suppressMessages(invisible(nyc.df <- fortify(nyc)))) 
+suppressWarnings(suppressMessages(nyc.df <- join(nyc.df, nyc@data, by="id")))
+nyc.df <- merge(nyc.df, data.pre, by.x="precinct", by.y="Var1", all.x=T, a..ly=F)
+```
+
+```{r, echo = FALSE}
+nyc.tickets <- ggplot(data=nyc.df, aes(x=long, y=lat, group=group)) 
+nyc.tickets <- nyc.tickets + geom_polygon(aes(fill=nyc.df$Freq))
+nyc.tickets <- nyc.tickets + geom_path(color="gray70")
+nyc.tickets <- nyc.tickets + coord_equal() 
+nyc.tickets <- nyc.tickets + scale_fill_gradient(low = "#FFF4C2", high = "#FA0040", 
+                                 space = "Lab",
+                                 guide = "colourbar")
+nyc.tickets <- nyc.tickets + labs(title="Parking Tickets Issued by NYC Police Precinct in 2017", x = "Longitude", y = "Latitude", fill = "Tickets Issued")
+nyc.tickets <- nyc.tickets + annotate(geom="label", x=-74.1, y=40.9, label=paste0("Most Ticketed Precinct: ", most.tickted), color="black") + theme_gray(base_size = 14)
+print(nyc.tickets)
+```
+Based on the map, the most ticketed precinct is NYPD 19th Precinct, which is located in, unsurprisingly, Manhattan. This discovery is in line with the result of the last problem, which states it is more likely to get a ticket in Manhattan. We also observed that the precincts with more tickets issued are mostly gathered next to the east river. It makes sense since this area has more traffic than the other parts of the city.
+
+## Data Mining of Commercial Vehicles
+Using our description auxiliary dataset that we have crossed with the main dataset, we noticed that the violations for commericial vehicles stood out, particularly because commercial vehicle drivers should be more aware of the many parking violations that can be committed. Also, commercial vehicles are usually expected to have designated parking areas, but since New York City is so congested, their contribution to the total amount of parking tickets becomes even more interesting. We wanted to investigate this proportion of commercial vehicle violations out of the total number of violations.
+
+For this investigation, we used regular expressions to mine the description data for any variations on the phrase "commercial vehicle". Then, from the auxiliary dataset, once we received the violation codes that the descriptions are associated with, we then found the proportion of the number of cases for these violations out of the total. Below, we have created a "squares chart" in order to display this proportion.
+
+
+```{r, echo = FALSE}
+res <- dbSendQuery(conn = dcon, "SELECT * FROM viol")
+violations <- dbFetch(res, -1)
+dbClearResult(res)
+com.code <- subset(violations, str_detect(violations$DEFINITION, "[cC]ommercial [vV]ehicle"))
+com.ticket <- subset(data, `Violation Code` %in% com.code$CODE)
+com.per <- 100 - ceiling((nrow(com.ticket) / nrow(data)) * 100)
+```
+
+```{r, echo = FALSE}
+grid.newpage()
+for (i in 0:9){
+  for(j in 0:9){
+    vp <- viewport(width = .0487, height = .0487, x = (j)*(.0487 + .02)+0.167, y = (i)*(.02 + .0487)+0.167, just = c("left","bottom"))
+    pushViewport(vp)
+    if (com.per <= 0){
+      grid.rect(gp = gpar(fill = 'orange'))
+    }
+    else{
+      grid.rect(gp = gpar(fill = 'firebrick4'))
+      com.per <- com.per- 1
+    }
+    popViewport()
+  }
+}
+grid.text("Parking Tickets Issued to Commercial Vehicles Per 100 Tickets", y = .92, gp =gpar(fontsize = 14, fontface = 'bold'))
+grid.text("Commercial", x = .92, y = .6, gp =gpar(fontsize = 12, col = "orange", fontface = 'bold'))
+grid.text("Other", x = .92, y = .55, gp =gpar(fontsize = 12, col = "firebrick4", fontface = 'bold'), just = 'right')
+```
+
+From the chart, it appears that about 9% of the total violations are commercial vehicle-related. This is not a small percentage, nor is it a large one. Since commercial vehicles are less common than other types of vehicles on the road, it is expected that the commercial vehicle violations are kept to this percentage. However, it is quite significant knowing that commerical vehicle drivers should already understand the consequences of their actions, particularly in an area like New York City.
+
+
+## A New Visualization (for next time...)
+From last time, we decided to combine an auxiliary dataset that provided summary data of the violation description with our main data. This would require us to join both datasets with the violation codes corresponding to each other. Below, 10 rows are displayed that show this connection that we performed using SQL queries. We plan on using this data to display our "new concept/visualization" plot.
+
+
+```{r, echo = FALSE}
+#res <- dbSendQuery(conn = dcon, "
+#SELECT a.`Violation Code`, b.V2
+#FROM park AS a
+#INNER JOIN violations AS b
+#ON a.`Violation Code` = b.V1
+#GROUP BY `Violation Code`
+#LIMIT 20
+#")
+#x <- dbFetch(res, -1)
+#colnames(x) <- c("Violation Code", "Violation Description")
+#x
+#dbClearResult(res)
+```
+
+For the final project's "new concept/visualization", we plan on uploading an image of a traditional New York street, overlaying the image with facts about the proportions of the types of violations in accordance to features on the image. In other words, if there is a traffic light in the image, then next to light, we will overlay an text box displaying data about the frequencies of the traffic light violations. If there is a bus, then we will display data about bus violations next to it. Of course, the image cannot encompass all of these types of violations, so we will do as many violation types as we can find in the image.
+
+
+```{r, echo= FALSE}
+dbDisconnect(dcon)
+```
+
+
+```{r}
+hour_data <- as.data.frame(table(hours))
+
+grid.newpage()
+plot.new()
+par(pty = "s")
+grid.text("P", x= 0.5, y = 0.5, gp =gpar(fontsize = 250, fontface = 'bold'))
+vp1 <- viewport(x = 0.5, y = 0.5, width = 0.7, height = 0.077, angle = 135)
+pushViewport(vp1)
+grid.rect(gp = gpar(col = NA, fill = "#D00000"))
+popViewport()
+am_mean <- mean(hour_data$Freq[0:12])
+pm_mean <- mean(hour_data$Freq[13:length(hour_data$Freq)])
+colfunc <- colorRampPalette(c("#D00000", "pink"))
+cols <- colfunc(100)
+angle <- 90
+for (y in hour_data$Freq[0:12]){
+  x <- floor(50 / am_mean * y)
+  draw.sector(angle, angle-30, rou1 = 0.44, rou2 = 0.4, center = c(0.5,0.5), col = cols[100 - x])
+  angle <<- angle - 30
+}
+angle <- 90
+for (y in hour_data$Freq[13:length(hour_data$Freq)]){
+  x <- floor(50 / pm_mean * y)
+  draw.sector(angle, angle-30, rou1 = 0.4, rou2 = 0.36, center = c(0.5,0.5), col = cols[100 - x])
+  angle <<- angle - 30
+}
+grid.text("No Parking: 'Clock' Plot", y = .97, gp =gpar(fontsize = 14, fontface = 'bold'))
+grid.text("12", y = .93, gp =gpar(fontsize = 10))
+grid.text("1", x = 0.71, y = .88, gp =gpar(fontsize = 10))
+grid.text("2", x = .87,y = .71, gp =gpar(fontsize = 10))
+grid.text("3", x = .93, gp =gpar(fontsize = 10))
+grid.text("4", x = .87,y = .29, gp =gpar(fontsize = 10))
+grid.text("5", x = .71, y = .12, gp =gpar(fontsize = 10))
+grid.text("6", y = .07, gp =gpar(fontsize = 10))
+grid.text("7", x = .29, y = .12, gp =gpar(fontsize = 10))
+grid.text("8", x = .13,y = .29, gp =gpar(fontsize = 10))
+grid.text("9", x = .07, gp =gpar(fontsize = 10))
+grid.text("10", x = .13, y = .71, gp =gpar(fontsize = 10))
+grid.text("11",x = 0.29, y = .88, gp =gpar(fontsize = 10))
+
+grid.text("PM", x = .78, y = .6, gp =gpar(fontsize = 12, fontface = 'bold'))
+grid.text("AM", x = .93, y = .6, gp =gpar(fontsize = 12, fontface = 'bold'))
+```
+
